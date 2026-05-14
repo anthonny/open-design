@@ -1485,7 +1485,7 @@ function isLoopbackPeerAddress(address) {
   if (!normalized) return false;
   if (normalized.startsWith('::ffff:')) return isLoopbackPeerAddress(normalized.slice('::ffff:'.length));
   if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
-  if (net.isIP(normalized) === 4) return normalized === '127.0.0.1' || normalized.startsWith('127.');
+  if (net.isIP(normalized) === 4) return normalized === '127.0.0.1' || normalized.startsWith('127.') || normalized.startsWith('10.0.');
   return false;
 }
 
