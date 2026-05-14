@@ -1592,7 +1592,7 @@ function validateLocalDaemonRequest(req) {
     return {
       ok: false,
       message: 'request peer must be a loopback address',
-      details: { peer: 'remoteAddress' },
+      details: { peer: `remoteAddress ${req.socket?.remoteAddress}` },
     };
   }
 
