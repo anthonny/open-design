@@ -1,23 +1,18 @@
 // @ts-nocheck
+import { createCommandInvocation } from '@open-design/platform';
 import type { DesktopExportPdfInput, DesktopExportPdfResult } from '@open-design/sidecar-proto';
 import express from 'express';
 import multer from 'multer';
 import { execFile, spawn } from 'node:child_process';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
+import { createRequire } from 'node:module';
 import net from 'node:net';
-import {
-  composeSystemPrompt,
-  renderCodexImagegenOverride,
-  shouldRenderCodexImagegenOverride,
-} from './prompts/system.js';
-import { expandHomePrefix, resolveProjectRelativePath } from './home-expansion.js';
-import { createCommandInvocation } from '@open-design/platform';
-import { SIDECAR_DEFAULTS, SIDECAR_ENV } from '@open-design/sidecar-proto';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { attachAcpSession } from './acp.js';
+import { registerActiveContextRoutes } from './active-context-routes.js';
 import {
   buildLiveArtifactsMcpServersForAgent,
   checkPromptArgvBudget,
@@ -30,14 +25,163 @@ import {
   sanitizeCustomModel,
   spawnEnvForAgent,
 } from './agents.js';
-import { migrateLegacyDataDirSync } from './legacy-data-migrator.js';
-import { findSkillById, listSkills, splitDerivedSkillId } from './skills.js';
-import { validateLinkedDirs } from './linked-dirs.js';
-import { installFromTarget, uninstallById, sanitizeRepoName } from './library-install.js';
-import { buildWindowsFolderDialogCommand, parseFolderDialogStdout } from './native-folder-dialog.js';
-import { listCodexPets, readCodexPetSpritesheet } from './codex-pets.js';
-import { syncCommunityPets } from './community-pets-sync.js';
+import {
+  createAnalyticsService,
+  readAnalyticsContext,
+  readPublicConfigResponse,
+} from './analytics.js';
+import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from './app-config.js';
+import { readCurrentAppVersionInfo } from './app-version.js';
+import { validateArtifactManifestInput } from './artifact-manifest.js';
+import { registerChatRoutes } from './chat-routes.js';
+import { importClaudeDesignZip } from './claude-design-import.js';
+import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
+import { createClaudeStreamHandler } from './claude-stream.js';
+import {
+  redactSecrets,
+  testAgentConnection,
+  testProviderConnection,
+  validateBaseUrl,
+} from './connectionTest.js';
+import { configureComposioConfigStore } from './connectors/composio-config.js';
+import { composioConnectorProvider } from './connectors/composio.js';
+import { registerConnectorRoutes } from './connectors/routes.js';
+import { configureConnectorCredentialStore, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
+import { createCopilotStreamHandler } from './copilot-stream.js';
+import { loadCraftSections } from './craft.js';
+import { handleCritiqueArtifact } from './critique/artifact-handler.js';
+import { loadCritiqueConfigFromEnv } from './critique/config.js';
+import { handleCritiqueInterrupt } from './critique/interrupt-handler.js';
+import { runOrchestrator } from './critique/orchestrator.js';
+import { reconcileStaleRuns } from './critique/persistence.js';
+import { createRunRegistry } from './critique/run-registry.js';
+import { stageActiveSkill } from './cwd-aliases.js';
+import {
+  deleteProject as dbDeleteProject,
+  deleteConversation,
+  deletePreviewComment,
+  deleteTemplate,
+  getConversation,
+  getDeployment,
+  getDeploymentById,
+  getLatestRoutineRun,
+  getProject,
+  getTemplate,
+  insertConversation,
+  insertProject,
+  insertRoutineRun,
+  insertTemplate,
+  listConversations,
+  listDeployments,
+  listLatestProjectRunStatuses,
+  listMessages,
+  listPreviewComments,
+  listProjects,
+  listProjectsAwaitingInput,
+  listRoutines,
+  listTabs,
+  listTemplates,
+  openDatabase,
+  setTabs,
+  updateConversation,
+  updatePreviewCommentStatus,
+  updateProject,
+  updateRoutineRun,
+  upsertDeployment,
+  upsertMessage,
+  upsertPreviewComment
+} from './db.js';
+import { registerDeploymentCheckRoutes, registerDeployRoutes } from './deploy-routes.js';
+import {
+  aggregateCloudflarePagesStatus,
+  buildDeployFileSet,
+  checkDeploymentUrl,
+  CLOUDFLARE_PAGES_PROVIDER_ID,
+  cloudflarePagesProjectNameForProject,
+  DeployError,
+  deployToCloudflarePages,
+  deployToVercel,
+  isDeployProviderId,
+  listCloudflarePagesZones,
+  prepareDeployPreflight,
+  publicDeployConfigForProvider,
+  readCloudflarePagesDomain,
+  readDeployConfig,
+  VERCEL_PROVIDER_ID,
+  writeDeployConfig,
+} from './deploy.js';
 import { listDesignSystems, readDesignSystem } from './design-systems.js';
+import { buildDocumentPreview } from './document-preview.js';
+import {
+  finalizeDesignPackage,
+  FinalizePackageLockedError,
+  FinalizeUpstreamError,
+} from './finalize-design.js';
+import { resolveProjectRelativePath } from './home-expansion.js';
+import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
+import { createJsonEventStreamHandler } from './json-event-stream.js';
+import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
+import { migrateLegacyDataDirSync } from './legacy-data-migrator.js';
+import { validateLinkedDirs } from './linked-dirs.js';
+import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
+import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
+import { LiveArtifactRefreshUnavailableError, refreshLiveArtifact } from './live-artifacts/refresh-service.js';
+import { LiveArtifactRefreshAbortError } from './live-artifacts/refresh.js';
+import {
+  createLiveArtifact,
+  deleteLiveArtifact,
+  ensureLiveArtifactPreview,
+  getLiveArtifact,
+  listLiveArtifactRefreshLogEntries,
+  listLiveArtifacts,
+  LiveArtifactRefreshLockError,
+  LiveArtifactStoreValidationError,
+  readLiveArtifactCode,
+  recoverStaleLiveArtifactRefreshes,
+  updateLiveArtifact,
+} from './live-artifacts/store.js';
+import {
+  buildAcpMcpServers,
+  buildClaudeMcpJson,
+  isManagedProjectCwd,
+  readMcpConfig
+} from './mcp-config.js';
+import {
+  PendingAuthCache,
+  refreshAccessToken
+} from './mcp-oauth.js';
+import { registerMcpRoutes } from './mcp-routes.js';
+import {
+  isTokenExpired,
+  readAllTokens,
+  setToken
+} from './mcp-tokens.js';
+import { readMaskedConfig, writeConfig } from './media-config.js';
+import {
+  AUDIO_DURATIONS_SEC,
+  AUDIO_MODELS_BY_KIND,
+  IMAGE_MODELS,
+  MEDIA_ASPECTS,
+  MEDIA_PROVIDERS,
+  VIDEO_LENGTHS_SEC,
+  VIDEO_MODELS,
+} from './media-models.js';
+import { registerMediaRoutes } from './media-routes.js';
+import {
+  deleteMediaTask,
+  getMediaTask,
+  insertMediaTask,
+  listMediaTasksByProject,
+  listRecentMediaTasks,
+  reconcileMediaTasksOnBoot,
+  updateMediaTask,
+} from './media-tasks.js';
+import { generateMedia } from './media.js';
+import {
+  clearExtractions as clearMemoryExtractions,
+  listExtractions as listMemoryExtractions,
+  removeExtraction as removeMemoryExtraction,
+} from './memory-extractions.js';
 import {
   composeMemoryBody,
   deleteMemoryEntry,
@@ -53,107 +197,21 @@ import {
   writeMemoryConfig,
   writeMemoryIndex,
 } from './memory.js';
+import { buildWindowsFolderDialogCommand, parseFolderDialogStdout } from './native-folder-dialog.js';
+import { formatLocalProjectTimestamp, OrbitService, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import {
-  clearExtractions as clearMemoryExtractions,
-  listExtractions as listMemoryExtractions,
-  removeExtraction as removeMemoryExtraction,
-} from './memory-extractions.js';
-import { attachAcpSession } from './acp.js';
-import { attachPiRpcSession } from './pi-rpc.js';
-import { createClaudeStreamHandler } from './claude-stream.js';
-import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
-import { loadCritiqueConfigFromEnv } from './critique/config.js';
-import { reconcileStaleRuns } from './critique/persistence.js';
-import { runOrchestrator } from './critique/orchestrator.js';
-import { createRunRegistry } from './critique/run-registry.js';
-import { handleCritiqueInterrupt } from './critique/interrupt-handler.js';
-import { handleCritiqueArtifact } from './critique/artifact-handler.js';
-import { createCopilotStreamHandler } from './copilot-stream.js';
-import { createJsonEventStreamHandler } from './json-event-stream.js';
-import { createQoderStreamHandler } from './qoder-stream.js';
-import { subscribe as subscribeFileEvents } from './project-watchers.js';
-import { renderDesignSystemPreview } from './design-system-preview.js';
-import { renderDesignSystemShowcase } from './design-system-showcase.js';
-import { createChatRunService } from './runs.js';
-import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
-import {
-  createAnalyticsService,
-  readAnalyticsContext,
-  readPublicConfigResponse,
-} from './analytics.js';
-import {
-  redactSecrets,
-  testAgentConnection,
-  testProviderConnection,
-  validateBaseUrl,
-} from './connectionTest.js';
-import { listProviderModels } from './providerModels.js';
-import { importClaudeDesignZip } from './claude-design-import.js';
-import {
-  finalizeDesignPackage,
-  FinalizePackageLockedError,
-  FinalizeUpstreamError,
-} from './finalize-design.js';
-import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
-import { buildDocumentPreview } from './document-preview.js';
-import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
-import { loadCraftSections } from './craft.js';
-import { stageActiveSkill } from './cwd-aliases.js';
+  allowedBrowserPorts,
+  configuredAllowedOrigins,
+  isAllowedBrowserOrigin,
+  isLocalSameOrigin,
+} from './origin-validation.js';
 import { buildDesktopPdfExportInput } from './pdf-export.js';
-import { generateMedia } from './media.js';
-import { searchResearch, ResearchError } from './research/index.js';
-import { renderResearchCommandContract } from './prompts/research-contract.js';
+import { attachPiRpcSession } from './pi-rpc.js';
+import { registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectRoutes, registerProjectUploadRoutes } from './project-routes.js';
+import { subscribe as subscribeFileEvents } from './project-watchers.js';
 import {
-  AUDIO_DURATIONS_SEC,
-  AUDIO_MODELS_BY_KIND,
-  IMAGE_MODELS,
-  MEDIA_ASPECTS,
-  MEDIA_PROVIDERS,
-  VIDEO_LENGTHS_SEC,
-  VIDEO_MODELS,
-} from './media-models.js';
-import { readMaskedConfig, writeConfig } from './media-config.js';
-import {
-  deleteMediaTask,
-  getMediaTask,
-  insertMediaTask,
-  listMediaTasksByProject,
-  listRecentMediaTasks,
-  reconcileMediaTasksOnBoot,
-  updateMediaTask,
-} from './media-tasks.js';
-import {
-  MCP_TEMPLATES,
-  buildAcpMcpServers,
-  buildClaudeMcpJson,
-  isManagedProjectCwd,
-  readMcpConfig,
-  writeMcpConfig,
-} from './mcp-config.js';
-import {
-  beginAuth,
-  exchangeCodeForToken,
-  PendingAuthCache,
-  refreshAccessToken,
-} from './mcp-oauth.js';
-import {
-  clearToken,
-  getToken,
-  isTokenExpired,
-  readAllTokens,
-  setToken,
-} from './mcp-tokens.js';
-import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from './app-config.js';
-import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
-import {
-  RoutineService,
-  validateSchedule as validateRoutineSchedule,
-  validateTarget as validateRoutineTarget,
-} from './routines.js';
-import { buildMcpInstallPayload } from './mcp-install-info.js';
-import {
-  buildProjectArchive,
   buildBatchArchive,
+  buildProjectArchive,
   decodeMultipartFilename,
   deleteProjectFile,
   detectEntryFile,
@@ -164,111 +222,32 @@ import {
   parseByteRange,
   projectDir,
   readProjectFile,
-  renameProjectFile,
   removeProjectDir,
-  sanitizeName,
-  searchProjectFiles,
+  renameProjectFile,
   resolveProjectDir,
   resolveProjectFilePath,
+  sanitizeName,
+  searchProjectFiles,
   writeProjectFile,
 } from './projects.js';
-import { validateArtifactManifestInput } from './artifact-manifest.js';
-import { readCurrentAppVersionInfo } from './app-version.js';
+import { renderResearchCommandContract } from './prompts/research-contract.js';
 import {
-  deleteConversation,
-  deletePreviewComment,
-  deleteProject as dbDeleteProject,
-  deleteTemplate,
-  getConversation,
-  getDeployment,
-  getDeploymentById,
-  getProject,
-  getTemplate,
-  insertConversation,
-  insertProject,
-  insertRoutine,
-  insertRoutineRun,
-  insertTemplate,
-  listProjectsAwaitingInput,
-  listConversations,
-  listDeployments,
-  listLatestProjectRunStatuses,
-  listMessages,
-  listPreviewComments,
-  listProjects,
-  listRoutines,
-  listRoutineRuns,
-  listTabs,
-  listTemplates,
-  getLatestRoutineRun,
-  getRoutine,
-  deleteRoutine as dbDeleteRoutine,
-  openDatabase,
-  setTabs,
-  updateConversation,
-  updatePreviewCommentStatus,
-  updateProject,
-  updateRoutine,
-  updateRoutineRun,
-  upsertDeployment,
-  upsertMessage,
-  upsertPreviewComment,
-} from './db.js';
-import {
-  createLiveArtifact,
-  deleteLiveArtifact,
-  ensureLiveArtifactPreview,
-  getLiveArtifact,
-  LiveArtifactRefreshLockError,
-  LiveArtifactStoreValidationError,
-  listLiveArtifacts,
-  listLiveArtifactRefreshLogEntries,
-  readLiveArtifactCode,
-  recoverStaleLiveArtifactRefreshes,
-  updateLiveArtifact,
-} from './live-artifacts/store.js';
-import { LiveArtifactRefreshUnavailableError, refreshLiveArtifact } from './live-artifacts/refresh-service.js';
-import { LiveArtifactRefreshAbortError } from './live-artifacts/refresh.js';
-import { registerConnectorRoutes } from './connectors/routes.js';
-import { registerActiveContextRoutes } from './active-context-routes.js';
-import { registerMcpRoutes } from './mcp-routes.js';
-import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
-import { registerDeployRoutes, registerDeploymentCheckRoutes } from './deploy-routes.js';
-import { registerMediaRoutes } from './media-routes.js';
-import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
-import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
-import { registerChatRoutes } from './chat-routes.js';
-import { registerStaticResourceRoutes } from './static-resource-routes.js';
-import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
+  composeSystemPrompt,
+  renderCodexImagegenOverride,
+  shouldRenderCodexImagegenOverride,
+} from './prompts/system.js';
+import { listProviderModels } from './providerModels.js';
+import { createQoderStreamHandler } from './qoder-stream.js';
+import { ResearchError, searchResearch } from './research/index.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
-import { configureConnectorCredentialStore, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
-import { composioConnectorProvider } from './connectors/composio.js';
-import { configureComposioConfigStore } from './connectors/composio-config.js';
+import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
+import {
+  RoutineService
+} from './routines.js';
+import { createChatRunService } from './runs.js';
+import { findSkillById, listSkills } from './skills.js';
+import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { CHAT_TOOL_ENDPOINTS, CHAT_TOOL_OPERATIONS, toolTokenRegistry } from './tool-tokens.js';
-import {
-  aggregateCloudflarePagesStatus,
-  buildDeployFileSet,
-  checkDeploymentUrl,
-  CLOUDFLARE_PAGES_PROVIDER_ID,
-  cloudflarePagesProjectNameForProject,
-  DeployError,
-  deployToCloudflarePages,
-  deployToVercel,
-  isDeployProviderId,
-  listCloudflarePagesZones,
-  prepareDeployPreflight,
-  publicDeployConfigForProvider,
-  readDeployConfig,
-  readCloudflarePagesDomain,
-  VERCEL_PROVIDER_ID,
-  writeDeployConfig,
-} from './deploy.js';
-import {
-  allowedBrowserPorts,
-  configuredAllowedOrigins,
-  isAllowedBrowserOrigin,
-  isLocalSameOrigin,
-} from './origin-validation.js';
 
 /** @typedef {import('@open-design/contracts').ApiErrorCode} ApiErrorCode */
 /** @typedef {import('@open-design/contracts').ApiError} ApiError */
@@ -1531,7 +1510,7 @@ function validateLocalDaemonRequest(req) {
     return {
       ok: false,
       message: 'request peer must be a loopback address',
-      details: { peer: 'remoteAddress' },
+      details: { peer: `remoteAddress ${req.socket?.remoteAddress}` },
     };
   }
 
